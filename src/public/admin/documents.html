@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SOLess Document Management</title>
+    <link rel="stylesheet" href="css/admin.css">
+</head>
+<body>
+    <header>
+        <h1>SOLess Admin Dashboard</h1>
+        <div class="nav-links">
+            <a href="/admin/index.html">Dashboard</a>
+            <a href="/admin/documents.html" class="active">Documents</a>
+            <a href="/admin/integration.html">Website Integration</a>
+        </div>
+    </header>
+
+    <main>
+        <aside class="sidebar">
+            <ul class="sidebar-nav">
+                <li><a href="/admin/index.html">Dashboard</a></li>
+                <li><a href="/admin/documents.html" class="active">Document Management</a></li>
+                <li><a href="/admin/integration.html">Website Integration</a></li>
+            </ul>
+        </aside>
+
+        <div class="content">
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Document Management</h2>
+                </div>
+                <p>Upload knowledge documents to teach the SOLess chatbot. The bot will use this information to provide accurate responses about the SOLess project.</p>
+                <p>Supported file types: PDF, Markdown (.md), and Text (.txt) files.</p>
+            </div>
+
+            <div class="file-upload">
+                <h2>Upload Knowledge Documents</h2>
+                <p>Upload files to enhance your SOLess chatbot's knowledge base.</p>
+                <form id="upload-form" enctype="multipart/form-data">
+                    <input type="file" id="document" name="document" accept=".pdf,.md,.txt">
+                    <button type="submit" class="btn">Upload</button>
+                </form>
+            </div>
+            
+            <div id="file-list">
+                <h2>Current Documents</h2>
+                <div id="documents-container">Loading...</div>
+            </div>
+        </div>
+    </main>
+
+    <script src="js/admin.js"></script>
+</body>
+</html>
