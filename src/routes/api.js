@@ -195,19 +195,22 @@ router.post("/conversations/:conversationId/messages", async (req, res) => {
 });
 
 // Add file upload endpoint
-router.post("/documents/upload", upload.single("document"), (req, res) => {
+router.post("/documents/upload", upload.array("document", 10), (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded" });
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: "No files uploaded" });
     }
 
+    // Get names of all uploaded files
+    const uploadedFiles = req.files.map(file => file.originalname);
+
     res.status(200).json({
-      message: "File uploaded successfully",
-      filename: req.file.originalname,
+      message: `${req.files.length} file(s) uploaded successfully`,
+      files: uploadedFiles
     });
   } catch (error) {
-    console.error("Error uploading file:", error);
-    res.status(500).json({ error: "Failed to upload file" });
+    console.error("Error uploading files:", error);
+    res.status(500).json({ error: "Failed to upload files" });
   }
 });
 

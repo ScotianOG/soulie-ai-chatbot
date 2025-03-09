@@ -162,6 +162,43 @@ function initializeDocumentUpload() {
   // Load document list
   loadDocuments();
   
+  // Handle file selection
+  const fileInput = document.getElementById('document');
+  const selectedFilesContainer = document.getElementById('selected-files');
+  
+  if (fileInput) {
+    fileInput.addEventListener('change', (e) => {
+      const files = e.target.files;
+      
+      // Clear previously selected files display
+      selectedFilesContainer.innerHTML = '';
+      
+      if (files.length > 0) {
+        // Show selected files
+        Array.from(files).forEach((file, index) => {
+          const fileDiv = document.createElement('div');
+          fileDiv.className = 'selected-file';
+          
+          // Format file size
+          const sizeInKB = file.size / 1024;
+          const sizeFormatted = sizeInKB > 1024 
+            ? `${(sizeInKB / 1024).toFixed(2)} MB` 
+            : `${sizeInKB.toFixed(2)} KB`;
+          
+          fileDiv.innerHTML = `
+            <span class="selected-file-name">${file.name}</span>
+            <span class="selected-file-size">${sizeFormatted}</span>
+            <div class="upload-progress">
+              <div class="upload-progress-bar" id="progress-${index}"></div>
+            </div>
+          `;
+          
+          selectedFilesContainer.appendChild(fileDiv);
+        });
+      }
+    });
+  }
+  
   // Handle form submission
   const uploadForm = document.getElementById('upload-form');
   
@@ -170,12 +207,15 @@ function initializeDocumentUpload() {
     
     const fileInput = document.getElementById('document');
     if (!fileInput.files.length) {
-      alert('Please select a file to upload');
+      alert('Please select one or more files to upload');
       return;
     }
     
     const formData = new FormData();
-    formData.append('document', fileInput.files[0]);
+    // Append all selected files to the form data
+    Array.from(fileInput.files).forEach(file => {
+      formData.append('document', file);
+    });
     
     try {
       const response = await fetch(`${apiBaseUrl}/documents/upload`, {
@@ -184,15 +224,18 @@ function initializeDocumentUpload() {
       });
       
       if (response.ok) {
+        const result = await response.json();
+        alert(result.message);
         fileInput.value = '';
+        selectedFilesContainer.innerHTML = '';
         loadDocuments();
       } else {
         const error = await response.json();
         alert(`Upload failed: ${error.error || 'Unknown error'}`);
       }
     } catch (error) {
-      console.error('Error uploading document:', error);
-      alert('Error uploading document');
+      console.error('Error uploading documents:', error);
+      alert('Error uploading documents');
     }
   });
 }

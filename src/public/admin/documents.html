@@ -40,8 +40,10 @@
                 <h2>Upload Knowledge Documents</h2>
                 <p>Upload files to enhance your SOLess chatbot's knowledge base.</p>
                 <form id="upload-form" enctype="multipart/form-data">
-                    <input type="file" id="document" name="document" accept=".pdf,.md,.txt">
-                    <button type="submit" class="btn">Upload</button>
+                    <input type="file" id="document" name="document" accept=".pdf,.md,.txt" multiple>
+                    <p class="file-help">Select multiple files by holding Ctrl (or Cmd on Mac) while choosing files.</p>
+                    <div id="selected-files"></div>
+                    <button type="submit" class="btn">Upload Files</button>
                 </form>
             </div>
             
