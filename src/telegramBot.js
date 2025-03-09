@@ -64,7 +64,31 @@ bot.on('message', async (msg) => {
   if (!msg.text || msg.text.startsWith('/')) return;
   
   const chatId = msg.chat.id;
-  const userMessage = msg.text;
+  let userMessage = msg.text;
+  
+  // Check if this is a group chat and the message is mentioning the bot
+  const isGroup = msg.chat.type === 'group' || msg.chat.type === 'supergroup';
+  const botInfo = await bot.getMe();
+  const botUsername = botInfo.username;
+  const botMentioned = userMessage.includes(`@${botUsername}`);
+  
+  // In groups, only respond if the bot is mentioned or message is a reply to the bot
+  if (isGroup) {
+    // If it's a reply to a bot message
+    const isReplyToBot = msg.reply_to_message && msg.reply_to_message.from.username === botUsername;
+    
+    // Only process if mentioned or it's a reply to the bot
+    if (!botMentioned && !isReplyToBot) {
+      return;
+    }
+    
+    // Remove the bot mention from the message if present
+    if (botMentioned) {
+      userMessage = userMessage.replace(`@${botUsername}`, '').trim();
+    }
+    
+    console.log(`Group message received from ${msg.from.username || msg.from.id}: ${userMessage}`);
+  }
   
   // Get conversation ID or create new one
   let conversationId = conversations.get(chatId);

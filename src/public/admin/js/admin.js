@@ -22,10 +22,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const widgetCodeBox = document.getElementById('widget-code');
   const copyWidgetButton = document.getElementById('copy-widget-button');
   
+  // Settings Elements
+  const personaForm = document.getElementById('persona-form');
+  const telegramForm = document.getElementById('telegram-form');
+  
   // Initialize functionality based on what elements exist on the page
   if (chatContainer) initializeChat();
   if (uploadForm) initializeDocumentUpload();
   if (widgetCodeBox) initializeIntegration();
+  if (personaForm) initializePersonaSettings();
+  if (telegramForm) initializeTelegramSettings();
   
   // Initialize navigation
   initializeNavigation();
@@ -293,5 +299,152 @@ function initializeIntegration() {
         alert('Failed to copy code to clipboard');
       });
     });
+  }
+}
+
+/**
+ * Persona Settings Functionality
+ */
+async function initializePersonaSettings() {
+  const personaForm = document.getElementById('persona-form');
+  if (!personaForm) return;
+  
+  try {
+    // Fetch current persona settings
+    const response = await fetch(`${apiBaseUrl}/settings/persona`);
+    if (response.ok) {
+      const { persona } = await response.json();
+      
+      // Fill form with current settings
+      document.getElementById('persona-name').value = persona.name || '';
+      document.getElementById('persona-style').value = persona.style || '';
+      document.getElementById('persona-background').value = persona.background || '';
+    } else {
+      console.warn('Could not load persona settings');
+    }
+  } catch (error) {
+    console.error('Error loading persona settings:', error);
+  }
+  
+  // Handle form submission
+  personaForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const personaData = {
+      name: document.getElementById('persona-name').value.trim(),
+      style: document.getElementById('persona-style').value.trim(),
+      background: document.getElementById('persona-background').value.trim()
+    };
+    
+    try {
+      const response = await fetch(`${apiBaseUrl}/settings/persona`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ persona: personaData })
+      });
+      
+      if (response.ok) {
+        // Show success message
+        alert('Persona settings saved successfully!');
+      } else {
+        const error = await response.json();
+        alert(`Failed to save persona settings: ${error.error || 'Unknown error'}`);
+      }
+    } catch (error) {
+      console.error('Error saving persona settings:', error);
+      alert('Error saving persona settings. Please try again.');
+    }
+  });
+}
+
+/**
+ * Telegram Bot Settings Functionality
+ */
+async function initializeTelegramSettings() {
+  const telegramForm = document.getElementById('telegram-form');
+  const telegramStatus = document.getElementById('telegram-status');
+  if (!telegramForm || !telegramStatus) return;
+  
+  try {
+    // Fetch current telegram settings
+    const response = await fetch(`${apiBaseUrl}/settings/telegram`);
+    if (response.ok) {
+      const { enabled, token, status } = await response.json();
+      
+      // Fill form with current settings
+      document.getElementById('telegram-enabled').checked = enabled;
+      document.getElementById('telegram-token').value = token || '';
+      
+      // Update status display
+      updateTelegramStatus(status);
+    } else {
+      console.warn('Could not load telegram settings');
+      updateTelegramStatus('inactive');
+    }
+  } catch (error) {
+    console.error('Error loading telegram settings:', error);
+    updateTelegramStatus('error', 'Could not connect to server');
+  }
+  
+  // Handle form submission
+  telegramForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const telegramData = {
+      enabled: document.getElementById('telegram-enabled').checked,
+      token: document.getElementById('telegram-token').value.trim()
+    };
+    
+    try {
+      const response = await fetch(`${apiBaseUrl}/settings/telegram`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(telegramData)
+      });
+      
+      if (response.ok) {
+        const { status, message } = await response.json();
+        updateTelegramStatus(status, message);
+        alert('Telegram settings saved successfully!');
+      } else {
+        const error = await response.json();
+        updateTelegramStatus('error', error.error || 'Unknown error');
+        alert(`Failed to save Telegram settings: ${error.error || 'Unknown error'}`);
+      }
+    } catch (error) {
+      console.error('Error saving Telegram settings:', error);
+      updateTelegramStatus('error', 'Connection error');
+      alert('Error saving Telegram settings. Please try again.');
+    }
+  });
+}
+
+function updateTelegramStatus(status, message) {
+  const telegramStatus = document.getElementById('telegram-status');
+  if (!telegramStatus) return;
+  
+  telegramStatus.className = 'telegram-status';
+  
+  switch (status) {
+    case 'connected':
+      telegramStatus.classList.add('status-connected');
+      telegramStatus.innerHTML = `<strong>Status:</strong> Connected and running`;
+      if (message) telegramStatus.innerHTML += `<br>${message}`;
+      break;
+    case 'error':
+      telegramStatus.classList.add('status-error');
+      telegramStatus.innerHTML = `<strong>Status:</strong> Error`;
+      if (message) telegramStatus.innerHTML += `<br>${message}`;
+      break;
+    case 'inactive':
+    default:
+      telegramStatus.classList.add('status-inactive');
+      telegramStatus.innerHTML = `<strong>Status:</strong> Inactive`;
+      if (message) telegramStatus.innerHTML += `<br>${message}`;
+      break;
   }
 }
