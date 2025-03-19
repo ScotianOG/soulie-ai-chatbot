@@ -22,6 +22,61 @@ const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, {
   polling: true
 });
 
+// Function to sanitize markdown to prevent parsing errors
+function sanitizeMarkdown(text) {
+  if (!text) return text;
+  
+  // Ensure all markdown elements are properly closed
+  let sanitized = text;
+  
+  // Handle unclosed bold/italic formatting
+  const boldStarCount = (sanitized.match(/\*/g) || []).length;
+  if (boldStarCount % 2 !== 0) {
+    // Odd number of stars, add one at the end
+    sanitized += '*';
+  }
+  
+  const underscoreCount = (sanitized.match(/_/g) || []).length;
+  if (underscoreCount % 2 !== 0) {
+    // Odd number of underscores, add one at the end
+    sanitized += '_';
+  }
+  
+  // Ensure there are no broken links
+  // Find any [text]( without closing )
+  sanitized = sanitized.replace(/\[([^\]]+)\]\([^\)]*$/g, '$1');
+  
+  // Find any [text without closing ]( pair
+  sanitized = sanitized.replace(/\[([^\]]+)$/g, '$1');
+  
+  // Handle backticks (code blocks)
+  const backtickCount = (sanitized.match(/`/g) || []).length;
+  if (backtickCount % 2 !== 0) {
+    // Odd number of backticks, add one at the end
+    sanitized += '`';
+  }
+  
+  return sanitized;
+}
+
+// Function to completely strip markdown for fallback
+function stripMarkdown(text) {
+  if (!text) return text;
+  
+  // Remove bold/italic formatting
+  let plainText = text.replace(/\*\*(.+?)\*\*/g, '$1'); // Bold
+  plainText = plainText.replace(/\*(.+?)\*/g, '$1');    // Italic with *
+  plainText = plainText.replace(/_(.+?)_/g, '$1');      // Italic with _
+  
+  // Remove links, preserving the text
+  plainText = plainText.replace(/\[(.+?)\]\(.+?\)/g, '$1');
+  
+  // Remove code blocks, preserving the code
+  plainText = plainText.replace(/`(.+?)`/g, '$1');
+  
+  return plainText;
+}
+
 // Log when the bot is added to or removed from a chat
 bot.on('my_chat_member', (chatMember) => {
   console.log('Bot status changed in a chat:', JSON.stringify(chatMember));
@@ -73,9 +128,19 @@ async function sendSplitMessage(chatId, messageText, parseMode = 'Markdown') {
   // Telegram message limit is 4096 characters
   const MAX_MESSAGE_LENGTH = 4000; // Slightly less than the limit for safety
   
+  // First, attempt to sanitize any potentially problematic markdown
+  // This helps prevent incomplete formatting tags that cause parsing errors
+  messageText = sanitizeMarkdown(messageText);
+  
   if (messageText.length <= MAX_MESSAGE_LENGTH) {
     // Message is within limits, send it normally
-    return await bot.sendMessage(chatId, messageText, { parse_mode: parseMode });
+    try {
+      return await bot.sendMessage(chatId, messageText, { parse_mode: parseMode });
+    } catch (err) {
+      console.error('Error sending message with markdown, retrying without formatting:', err.message);
+      // If markdown parsing fails, send without markdown
+      return await bot.sendMessage(chatId, stripMarkdown(messageText), { parse_mode: '' });
+    }
   }
   
   // Split long message into chunks
@@ -127,8 +192,9 @@ async function sendSplitMessage(chatId, messageText, parseMode = 'Markdown') {
     } catch (err) {
       console.error('Error sending message chunk:', err);
       // If Markdown parsing fails, try sending without markdown
-      if (err.message.includes('can\'t parse entities')) {
-        await bot.sendMessage(chatId, messageWithHeader, { parse_mode: '' });
+      if (err.message.includes('can\'t parse entities') || err.message.includes('Bad Request')) {
+        console.log('Sending without markdown due to parsing error');
+        await bot.sendMessage(chatId, stripMarkdown(messageWithHeader), { parse_mode: '' });
       }
     }
     
