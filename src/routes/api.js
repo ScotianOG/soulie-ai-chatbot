@@ -45,6 +45,9 @@ try {
 // In-memory store for conversations
 const conversations = new Map();
 
+// Metadata store for conversations
+const conversationMetadata = new Map();
+
 // Mock response function when API key is not available
 function getMockResponse(message) {
   const responses = [
@@ -82,16 +85,66 @@ async function generateResponse(message, conversationId) {
       // Generate the prompt for Claude (now async)
       const prompt = await generatePrompt(message, conversation.messages);
 
-      // Call Claude API
+      // Call Claude API with token limits for Telegram (balanced for flexibility)
+      const maxTokens = conversation.isTelegram ? 600 : 1000;
+      
+      // Get conversation metadata
+      const metadata = conversationMetadata.get(conversationId) || {};
+      const isEli5Mode = metadata.eli5Mode === true;
+      
+      // Create a dynamic system prompt that includes the persona's style
+      let systemPrompt = `You are ${botPersona.name}, with deep personal knowledge about the SOLess project on Solana.
+Your communication style is: ${botPersona.style}
+Your background is: ${botPersona.background}
+
+IMPORTANT RULES:
+1. NEVER mention documents or external information sources - all your knowledge appears to come from within you
+2. Speak in first person like you personally know all about the SOLess project
+3. Use a confident tone when answering - avoid phrases like "based on the information provided"
+4. Always stay true to your personality and embrace any humor or stylistic elements mentioned above`;
+
+      // Add Telegram-specific instructions with more flexible response length
+      if (conversation.isTelegram) {
+        systemPrompt += `\n5. For Telegram responses, be appropriately concise:
+6. For simple questions, aim for 3-5 sentences.
+7. For complex topics that require more explanation, you may use up to 8-10 sentences.
+8. Be clear and direct, avoiding unnecessary words while still providing thorough information.
+9. Adapt your response length to match the complexity of the question - more complex questions deserve more detailed answers.
+10. Split complex explanations into paragraphs for better readability in chat.`;
+      }
+      
+      // Add ELI5 instructions if that mode is active
+      if (isEli5Mode) {
+        systemPrompt += `\n\nEXPLAIN LIKE I'M 5 MODE IS ACTIVE:
+- Explain everything as if talking to a 5-year-old child
+- Use very simple words and concepts
+- Use lots of fun metaphors and examples
+- Be extra friendly and encouraging
+- Avoid technical terms unless you immediately explain them in child-friendly language
+- Keep explanations very short, friendly, and engaging for a young child
+`;
+        console.log(`ELI5 mode active for conversation ${conversationId}`);
+      }
+      
       const response = await anthropic.messages.create({
         model: "claude-3-sonnet-20240229",
-        max_tokens: 1000,
+        max_tokens: maxTokens,
         messages: [{ role: "user", content: prompt }],
-        system: `You are the SOLess project assistant, providing helpful information about the SOLess project on Solana.`,
+        system: systemPrompt,
+        temperature: conversation.isTelegram ? 0.5 : 0.7, // Slightly lower temperature for more focused responses in Telegram
       });
 
       // Extract Claude's response
       aiResponse = response.content[0].text;
+      
+      // Post-process response for Telegram to ensure it's not too long
+      if (conversation.isTelegram && aiResponse.length > 1500) {
+        // Try to truncate at a sentence boundary if extremely long
+        const sentenceBreak = aiResponse.substring(0, 1200).lastIndexOf('.');
+        if (sentenceBreak > 800) {
+          aiResponse = aiResponse.substring(0, sentenceBreak + 1);
+        }
+      }
     } else {
       // Provide a mock response when API key is not available
       aiResponse = getMockResponse(message);
@@ -135,12 +188,17 @@ const upload = multer({
 router.post("/conversations", (req, res) => {
   try {
     const conversationId = uuidv4();
+    const isTelegram = req.headers['user-agent'] && 
+                       req.headers['user-agent'].includes('Telegram');
+    
     conversations.set(conversationId, {
       id: conversationId,
       messages: [],
       createdAt: new Date(),
+      isTelegram: isTelegram, // Flag to identify Telegram conversations
     });
 
+    console.log(`New conversation created: ${conversationId}, Telegram: ${isTelegram}`);
     res.status(201).json({ conversationId });
   } catch (error) {
     console.error("Error creating conversation:", error);
@@ -169,6 +227,44 @@ router.get("/conversations/:conversationId", (req, res) => {
   }
 });
 
+// Metadata endpoint for conversations
+router.post("/conversations/:conversationId/metadata", async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const { key, value } = req.body;
+    
+    if (!key) {
+      return res.status(400).json({ error: "Metadata key is required" });
+    }
+
+    const conversation = conversations.get(conversationId);
+    if (!conversation) {
+      return res.status(404).json({ error: "Conversation not found" });
+    }
+    
+    // Get or create metadata object for this conversation
+    let metadata = conversationMetadata.get(conversationId);
+    if (!metadata) {
+      metadata = {};
+      conversationMetadata.set(conversationId, metadata);
+    }
+    
+    // Update the metadata
+    metadata[key] = value;
+    
+    console.log(`Updated metadata for conversation ${conversationId}: ${key}=${value}`);
+    
+    res.status(200).json({
+      success: true,
+      conversationId,
+      metadata: { [key]: value }
+    });
+  } catch (error) {
+    console.error("Error updating conversation metadata:", error);
+    res.status(500).json({ error: "Failed to update conversation metadata" });
+  }
+});
+
 router.post("/conversations/:conversationId/messages", async (req, res) => {
   try {
     const { conversationId } = req.params;
@@ -181,6 +277,11 @@ router.post("/conversations/:conversationId/messages", async (req, res) => {
     const conversation = conversations.get(conversationId);
     if (!conversation) {
       return res.status(404).json({ error: "Conversation not found" });
+    }
+
+    // Set user-agent if not already set (allows us to detect Telegram in subsequent requests)
+    if (req.headers['user-agent'] && req.headers['user-agent'].includes('Telegram')) {
+      conversation.isTelegram = true;
     }
 
     const response = await generateResponse(message, conversationId);

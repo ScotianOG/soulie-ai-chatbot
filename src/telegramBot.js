@@ -17,8 +17,18 @@ if (!TELEGRAM_BOT_TOKEN) {
 
 console.log('Starting SOLess Project Bot...');
 
-// Initialize bot
-const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
+// Initialize bot with privacy mode disabled
+const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { 
+  polling: true
+});
+
+// Log when the bot is added to or removed from a chat
+bot.on('my_chat_member', (chatMember) => {
+  console.log('Bot status changed in a chat:', JSON.stringify(chatMember));
+  if (chatMember.new_chat_member && chatMember.new_chat_member.status === 'member') {
+    console.log(`Bot was added to chat: ${chatMember.chat.title || chatMember.chat.id}`);
+  }
+});
 
 // Store active conversations
 const conversations = new Map();
@@ -58,10 +68,149 @@ bot.onText(/\/start/, async (msg) => {
   }
 });
 
+// Helper function to split long messages
+async function sendSplitMessage(chatId, messageText, parseMode = 'Markdown') {
+  // Telegram message limit is 4096 characters
+  const MAX_MESSAGE_LENGTH = 4000; // Slightly less than the limit for safety
+  
+  if (messageText.length <= MAX_MESSAGE_LENGTH) {
+    // Message is within limits, send it normally
+    return await bot.sendMessage(chatId, messageText, { parse_mode: parseMode });
+  }
+  
+  // Split long message into chunks
+  let messages = [];
+  let position = 0;
+  
+  while (position < messageText.length) {
+    let chunk = messageText.substring(position, position + MAX_MESSAGE_LENGTH);
+    
+    // Try to split at a paragraph or sentence if possible
+    if (position + MAX_MESSAGE_LENGTH < messageText.length) {
+      // Look for paragraph breaks first
+      const paragraphBreak = chunk.lastIndexOf('\n\n');
+      if (paragraphBreak > MAX_MESSAGE_LENGTH / 2) {
+        chunk = chunk.substring(0, paragraphBreak);
+        position += paragraphBreak + 2; // +2 for the newlines
+      } else {
+        // Try to split at sentence end
+        const sentenceEnd = Math.max(
+          chunk.lastIndexOf('. '),
+          chunk.lastIndexOf('! '),
+          chunk.lastIndexOf('? ')
+        );
+        
+        if (sentenceEnd > MAX_MESSAGE_LENGTH / 2) {
+          chunk = chunk.substring(0, sentenceEnd + 1); // Include the period
+          position += sentenceEnd + 1;
+        } else {
+          // If no good break found, just use the chunk as is
+          position += MAX_MESSAGE_LENGTH;
+        }
+      }
+    } else {
+      position += chunk.length;
+    }
+    
+    // Add chunk indicator if sending multiple messages
+    let messageWithHeader = chunk;
+    if (messageText.length > MAX_MESSAGE_LENGTH) {
+      const partNumber = messages.length + 1;
+      messageWithHeader = chunk;
+    }
+    
+    try {
+      await bot.sendChatAction(chatId, 'typing');
+      await bot.sendMessage(chatId, messageWithHeader, { parse_mode: parseMode });
+      // Short delay between messages to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 200));
+    } catch (err) {
+      console.error('Error sending message chunk:', err);
+      // If Markdown parsing fails, try sending without markdown
+      if (err.message.includes('can\'t parse entities')) {
+        await bot.sendMessage(chatId, messageWithHeader, { parse_mode: '' });
+      }
+    }
+    
+    messages.push(messageWithHeader);
+  }
+  
+  return { messages };
+}
+
+// Add ELI5 command
+bot.onText(/\/eli5/, async (msg) => {
+  const chatId = msg.chat.id;
+  const eli5Message = `
+*Explain Like I'm 5 Mode Activated! 🧸*
+
+I'll now explain things in super simple terms like you're 5 years old!
+
+Just ask me your question after this message, and I'll respond with a child-friendly explanation.
+
+You can turn off this mode by typing /normal
+`;
+  
+  // Store the ELI5 mode in conversation metadata
+  let conversationId = conversations.get(chatId);
+  if (conversationId) {
+    try {
+      await axios.post(`${API_URL}/conversations/${conversationId}/metadata`, {
+        key: 'eli5Mode',
+        value: true
+      });
+    } catch (error) {
+      console.error('Error setting ELI5 mode:', error.message);
+    }
+  }
+  
+  await bot.sendMessage(chatId, eli5Message, { parse_mode: 'Markdown' });
+});
+
+// Add normal mode command
+bot.onText(/\/normal/, async (msg) => {
+  const chatId = msg.chat.id;
+  const normalMessage = `
+*Normal Mode Activated! 👨‍💻*
+
+I'll now explain things normally again.
+`;
+  
+  // Turn off ELI5 mode in conversation metadata
+  let conversationId = conversations.get(chatId);
+  if (conversationId) {
+    try {
+      await axios.post(`${API_URL}/conversations/${conversationId}/metadata`, {
+        key: 'eli5Mode',
+        value: false
+      });
+    } catch (error) {
+      console.error('Error setting normal mode:', error.message);
+    }
+  }
+  
+  await bot.sendMessage(chatId, normalMessage, { parse_mode: 'Markdown' });
+});
+
 // Handle all text messages
 bot.on('message', async (msg) => {
   // Skip if not text or is a command
   if (!msg.text || msg.text.startsWith('/')) return;
+  
+  // Log detailed message info for debugging
+  console.log('Received message:', JSON.stringify({
+    message_id: msg.message_id,
+    from: msg.from ? { id: msg.from.id, username: msg.from.username } : null,
+    chat: { id: msg.chat.id, type: msg.chat.type, title: msg.chat.title },
+    text: msg.text.substring(0, 20) + (msg.text.length > 20 ? '...' : ''),
+    reply_to_message: msg.reply_to_message ? {
+      message_id: msg.reply_to_message.message_id,
+      from: msg.reply_to_message.from ? { 
+        id: msg.reply_to_message.from.id, 
+        username: msg.reply_to_message.from.username 
+      } : null
+    } : null
+  }, null, 2));
   
   const chatId = msg.chat.id;
   let userMessage = msg.text;
@@ -70,24 +219,112 @@ bot.on('message', async (msg) => {
   const isGroup = msg.chat.type === 'group' || msg.chat.type === 'supergroup';
   const botInfo = await bot.getMe();
   const botUsername = botInfo.username;
-  const botMentioned = userMessage.includes(`@${botUsername}`);
+  
+  // Debug detailed bot info
+  console.log('Bot Info:', JSON.stringify(botInfo, null, 2));
+  
+  // Check for bot mentions in multiple formats (including name "Soulie")
+  const isMentionedWithAt = userMessage.toLowerCase().includes(`@${botUsername.toLowerCase()}`);
+  const isMentionedWithoutAt = userMessage.toLowerCase().includes(botUsername.toLowerCase());
+  const isMentionedBySoulie = userMessage.toLowerCase().includes('soulie');
+  const botMentioned = isMentionedWithAt || isMentionedWithoutAt || isMentionedBySoulie;
+  
+  // Alternative check - exact username or name matching
+  const exactUsername = `@${botUsername.toLowerCase()}`;
+  const exactSoulie = 'soulie';
+  const messageWords = userMessage.toLowerCase().split(/\s+/);
+  const hasExactUsername = messageWords.includes(exactUsername);
+  const hasExactSoulie = messageWords.includes(exactSoulie);
+  
+  // Debug logging
+  console.log(`Message received in ${isGroup ? 'group' : 'private'} chat`);
+  console.log(`Bot username: ${botUsername}`);
+  console.log(`Bot mentioned with @: ${isMentionedWithAt}`);
+  console.log(`Bot mentioned without @: ${isMentionedWithoutAt}`);
+  console.log(`Bot mentioned as Soulie: ${isMentionedBySoulie}`);
+  console.log(`Has exact username: ${hasExactUsername}`);
+  console.log(`Has exact Soulie: ${hasExactSoulie}`);
   
   // In groups, only respond if the bot is mentioned or message is a reply to the bot
   if (isGroup) {
-    // If it's a reply to a bot message
-    const isReplyToBot = msg.reply_to_message && msg.reply_to_message.from.username === botUsername;
+    // Check if it's a reply to a bot message
+    let isReplyToBot = false;
     
-    // Only process if mentioned or it's a reply to the bot
-    if (!botMentioned && !isReplyToBot) {
+    if (msg.reply_to_message && msg.reply_to_message.from) {
+      isReplyToBot = msg.reply_to_message.from.id === botInfo.id;
+      console.log(`Reply to message from user ID: ${msg.reply_to_message.from.id}`);
+      console.log(`Bot ID: ${botInfo.id}`);
+    }
+    
+    console.log(`Is reply to bot: ${isReplyToBot}`);
+    
+    // Only process if mentioned (by username or "Soulie") or it's a reply to the bot
+    if (!botMentioned && !isReplyToBot && !hasExactUsername && !hasExactSoulie) {
+      console.log('Skipping group message - not mentioned or replied to');
       return;
     }
     
     // Remove the bot mention from the message if present
-    if (botMentioned) {
-      userMessage = userMessage.replace(`@${botUsername}`, '').trim();
+    if (isMentionedWithAt) {
+      userMessage = userMessage.replace(new RegExp(`@${botUsername}`, 'i'), '').trim();
+    } else if (isMentionedWithoutAt && !isMentionedWithAt) {
+      // Only replace without @ if there's no @username (to avoid double replacement)
+      userMessage = userMessage.replace(new RegExp(botUsername, 'i'), '').trim();
     }
     
-    console.log(`Group message received from ${msg.from.username || msg.from.id}: ${userMessage}`);
+    // Remove "Soulie" from the message if it was used to mention the bot
+    if (isMentionedBySoulie) {
+      userMessage = userMessage.replace(/soulie/i, '').trim();
+    }
+    
+    console.log(`Group message being processed from ${msg.from.username || msg.from.id}: "${userMessage}"`);
+  }
+
+  // Check for ELI5 keywords in message
+  const hasEli5Keyword = /explain\s+like\s+(i['']?m|i\s+am|to)\s+(a\s+)?5(\s+year\s+old)?/i.test(userMessage) || 
+                         /eli5/i.test(userMessage);
+  
+  if (hasEli5Keyword) {
+    // Remove the ELI5 trigger from the message
+    userMessage = userMessage
+      .replace(/explain\s+like\s+(i['']?m|i\s+am|to)\s+(a\s+)?5(\s+year\s+old)?/i, '')
+      .replace(/eli5/i, '')
+      .trim();
+    
+    // If the message is empty after removing the trigger, ask for a question
+    if (!userMessage) {
+      await bot.sendMessage(
+        chatId, 
+        "What would you like me to explain in simple terms?",
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+    
+    // Set ELI5 mode for this message
+    let conversationId = conversations.get(chatId);
+    if (conversationId) {
+      try {
+        await axios.post(`${API_URL}/conversations/${conversationId}/metadata`, {
+          key: 'eli5Mode',
+          value: true
+        });
+        
+        // Reset to normal mode after this message (for a one-time ELI5)
+        setTimeout(async () => {
+          try {
+            await axios.post(`${API_URL}/conversations/${conversationId}/metadata`, {
+              key: 'eli5Mode',
+              value: false
+            });
+          } catch (error) {
+            console.error('Error resetting ELI5 mode:', error.message);
+          }
+        }, 1000);
+      } catch (error) {
+        console.error('Error setting one-time ELI5 mode:', error.message);
+      }
+    }
   }
   
   // Get conversation ID or create new one
@@ -99,10 +336,9 @@ bot.on('message', async (msg) => {
       conversations.set(chatId, conversationId);
     } catch (error) {
       console.error('Error creating conversation:', error.message);
-      await bot.sendMessage(
+      await sendSplitMessage(
         chatId, 
-        "Sorry, I'm having trouble connecting. Please try again later.",
-        { parse_mode: 'Markdown' }
+        "Sorry, I'm having trouble connecting. Please try again later."
       );
       return;
     }
@@ -121,16 +357,15 @@ bot.on('message', async (msg) => {
     // Get response
     const { message } = response.data;
     
-    // Send message
-    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    // Send message using the split function
+    await sendSplitMessage(chatId, message);
     
     console.log(`Message processed for ${chatId}`);
   } catch (error) {
     console.error('Error processing message:', error.message);
-    await bot.sendMessage(
+    await sendSplitMessage(
       chatId, 
-      "Sorry, I couldn't process your message. Please try again later.",
-      { parse_mode: 'Markdown' }
+      "Sorry, I couldn't process your message. Please try again later."
     );
   }
 });
@@ -138,6 +373,9 @@ bot.on('message', async (msg) => {
 // Help command
 bot.onText(/\/help/, async (msg) => {
   const chatId = msg.chat.id;
+  const botInfo = await bot.getMe();
+  const botUsername = botInfo.username;
+  
   const helpMessage = `
 *SOLess Project Bot Help*
 
@@ -147,6 +385,16 @@ Commands:
 /start - Start or restart our conversation
 /help - Show this help message
 /about - Learn about the SOLess project
+/eli5 - Switch to "Explain Like I'm 5" mode (simple explanations for kids)
+/normal - Switch back to normal explanation mode
+
+Ways to address me in group chats:
+- @${botUsername} (my username)
+- Soulie (my name)
+- Reply to one of my messages
+
+Special phrases:
+"eli5" or "explain like I'm 5 [question]" - One-time simple explanation
 
 Just ask me anything about SOLess!
 `;
