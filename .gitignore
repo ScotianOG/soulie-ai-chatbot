@@ -29,3 +29,8 @@ pids/
 # OS-specific
 .DS_Store
 Thumbs.db
+
+# Knowledge base documents
+# Uncomment the line below if you don't want to include
+# knowledge base documents in your repository
+docs/
