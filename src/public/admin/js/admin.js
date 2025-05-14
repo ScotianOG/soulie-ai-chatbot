@@ -4,7 +4,10 @@
 
 // Global variables
 let conversationId = null;
-const apiBaseUrl = "/api/solessbot";
+const apiBaseUrl = "/api"; // Base URL for all API endpoints
+const chatApiUrl = "/api/solessbot"; // Specific URL for chat endpoints
+let repoFiles = [];
+let repoInfo = null;
 
 // DOM Elements
 document.addEventListener("DOMContentLoaded", () => {
@@ -245,6 +248,348 @@ function initializeDocumentUpload() {
       alert("Error uploading documents");
     }
   });
+
+  // Handle GitHub repository form submission
+  const githubForm = document.getElementById("github-form");
+  if (githubForm) {
+    githubForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+
+      const repoInput = document.getElementById("repository");
+      const repository = repoInput.value.trim();
+
+      if (!repository) {
+        alert("Please enter a GitHub repository in the format owner/repo");
+        return;
+      }
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 240000); // 4 minutes timeout
+
+      try {
+        const response = await fetch(
+          `${apiBaseUrl}/documents/github/structure`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ repository }),
+            signal: controller.signal,
+            credentials: "same-origin",
+            keepalive: true,
+          }
+        );
+
+        if (!response.ok) {
+          const contentType = response.headers.get("content-type");
+          if (contentType && contentType.includes("application/json")) {
+            const error = await response.json();
+            throw new Error(error.error || `Server error: ${response.status}`);
+          } else {
+            throw new Error(`Server error: ${response.status}`);
+          }
+        }
+
+        const result = await response.json();
+        if (result.files && result.repoInfo) {
+          repoFiles = result.files;
+          repoInfo = result.repoInfo;
+          displayFileTree(result.files);
+          document.getElementById("github-file-list").style.display = "block";
+        } else {
+          throw new Error("Invalid response format from server");
+        }
+      } catch (error) {
+        console.error("Error loading GitHub repository:", error);
+        if (error.name === "AbortError") {
+          alert(
+            "Operation timed out - please check your connection and try again"
+          );
+        } else {
+          alert(
+            `Failed to load repository: ${
+              error.message || "Connection error - please try again"
+            }`
+          );
+        }
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    });
+  }
+
+  // Initialize file selection controls
+  initializeFileSelectionControls();
+}
+
+function displayFileTree(files) {
+  const container = document.getElementById("repo-files");
+  container.innerHTML = "";
+
+  // Enhanced caching
+  const filesByPath = new Map();
+  const tree = {};
+  const expandedDirs = new Set();
+  const processedDirs = new Map();
+  const dirSizes = new Map();
+  const fileTypes = new Map();
+
+  // Create file lookup and index all paths
+  files.forEach((file) => {
+    filesByPath.set(file.path, file);
+
+    // Pre-process file types
+    const ext = file.path.split(".").pop()?.toLowerCase();
+    fileTypes.set(file.path, {
+      isTypeScript: ext === "ts" || ext === "tsx",
+      isDocumentation:
+        ext === "md" ||
+        ext === "txt" ||
+        file.path.toLowerCase().includes("readme"),
+      isSourceCode: [
+        "js",
+        "ts",
+        "tsx",
+        "jsx",
+        "py",
+        "java",
+        "c",
+        "cpp",
+        "h",
+        "hpp",
+      ].includes(ext),
+    });
+  });
+
+  // Extract all unique paths including intermediate directories
+  const allPaths = new Set();
+  files.forEach((file) => {
+    const parts = file.path.split("/");
+    let currentPath = "";
+    parts.forEach((part) => {
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      allPaths.add(currentPath);
+    });
+  });
+
+  // Function to lazily calculate directory size with caching
+  function getDirSize(dirPath) {
+    if (dirSizes.has(dirPath)) return dirSizes.get(dirPath);
+
+    const size = Array.from(filesByPath.entries()).reduce(
+      (sum, [path, file]) => {
+        if (path === dirPath || path.startsWith(dirPath + "/")) {
+          return sum + (file.size || 0);
+        }
+        return sum;
+      },
+      0
+    );
+
+    dirSizes.set(dirPath, size);
+    return size;
+  }
+
+  // Build initial tree structure with lazy loading
+  allPaths.forEach((path) => {
+    const isFile = filesByPath.has(path);
+    if (isFile) {
+      const file = filesByPath.get(path);
+      const fileType = fileTypes.get(path);
+      tree[path] = {
+        ...file,
+        isFile: true,
+        ...fileType,
+      };
+    } else {
+      tree[path] = {
+        isDir: true,
+        path: path,
+        children: null, // Lazy load
+        size: getDirSize(path),
+        processed: false,
+      };
+    }
+  });
+
+  // Function to process directory contents only when needed
+  function processDirectory(dirPath) {
+    if (processedDirs.has(dirPath)) {
+      return processedDirs.get(dirPath);
+    }
+
+    const children = {};
+    const dirPrefix = dirPath + "/";
+
+    Array.from(filesByPath.entries())
+      .filter(([path]) => {
+        const relativePath = path.slice(dirPrefix.length);
+        const parts = relativePath.split("/");
+        return path.startsWith(dirPrefix) && parts.length === 1;
+      })
+      .forEach(([path, file]) => {
+        const name = path.slice(dirPrefix.length);
+        if (filesByPath.has(path)) {
+          const fileType = fileTypes.get(path);
+          children[name] = {
+            ...file,
+            isFile: true,
+            ...fileType,
+          };
+        }
+      });
+
+    // Add immediate subdirectories
+    allPaths.forEach((path) => {
+      if (path.startsWith(dirPrefix)) {
+        const relativePath = path.slice(dirPrefix.length);
+        const parts = relativePath.split("/");
+        if (parts.length === 1 && !filesByPath.has(path)) {
+          children[parts[0]] = {
+            isDir: true,
+            path: path,
+            children: null,
+            size: getDirSize(path),
+            processed: false,
+          };
+        }
+      }
+    });
+
+    processedDirs.set(dirPath, children);
+    return children;
+  }
+
+  // Rest of your existing createTreeHTML function with the toggle logic
+  // ...existing code...
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+function initializeFileSelectionControls() {
+  const selectAll = document.getElementById("select-all");
+  const selectDocs = document.getElementById("select-docs");
+  const importSelected = document.getElementById("import-selected");
+
+  if (selectAll) {
+    selectAll.addEventListener("click", () => {
+      const checkboxes = document.querySelectorAll(
+        "#repo-files input[type=checkbox]"
+      );
+      checkboxes.forEach((cb) => (cb.checked = true));
+    });
+  }
+
+  if (selectDocs) {
+    selectDocs.addEventListener("click", () => {
+      const checkboxes = document.querySelectorAll(
+        "#repo-files input[type=checkbox]"
+      );
+      checkboxes.forEach((cb) => {
+        const path = cb.dataset.path.toLowerCase();
+        cb.checked =
+          path.includes("readme") ||
+          path.includes("docs/") ||
+          path.endsWith(".md") ||
+          path.endsWith(".txt") ||
+          path.endsWith(".ts") ||
+          path.endsWith(".tsx") ||
+          path.includes("documentation") ||
+          path.includes("types/");
+      });
+    });
+  }
+
+  if (importSelected) {
+    importSelected.addEventListener("click", async () => {
+      const selectedFiles = Array.from(
+        document.querySelectorAll("#repo-files input[type=checkbox]:checked")
+      ).map((cb) => cb.dataset.path);
+
+      if (selectedFiles.length === 0) {
+        alert("Please select at least one file to import");
+        return;
+      }
+
+      if (selectedFiles.length > 100) {
+        alert(
+          "Too many files selected. Please select fewer files (maximum 100)."
+        );
+        return;
+      }
+
+      try {
+        if (!repoInfo || !repoInfo.owner || !repoInfo.repo) {
+          throw new Error(
+            "Repository information is missing. Please reload the repository."
+          );
+        }
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 240000); // 4 minutes timeout
+
+        const response = await fetch(`${apiBaseUrl}/documents/github/process`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            owner: repoInfo.owner,
+            repo: repoInfo.repo,
+            selectedFiles,
+          }),
+          credentials: "same-origin",
+          signal: controller.signal,
+          keepalive: true,
+        });
+
+        try {
+          if (!response.ok) {
+            const contentType = response.headers.get("content-type");
+            if (contentType && contentType.includes("application/json")) {
+              const error = await response.json();
+              throw new Error(
+                error.error || `Server error: ${response.status}`
+              );
+            } else {
+              throw new Error(`Server error: ${response.status}`);
+            }
+          }
+
+          const result = await response.json();
+          alert(result.message);
+          document.getElementById("github-file-list").style.display = "none";
+          document.getElementById("repository").value = "";
+          repoFiles = [];
+          repoInfo = null;
+          loadDocuments();
+        } catch (responseError) {
+          throw responseError;
+        } finally {
+          clearTimeout(timeoutId);
+        }
+      } catch (error) {
+        if (error.name === "AbortError") {
+          console.error("Operation timed out");
+          alert(
+            "Operation timed out - please try selecting fewer files or check your connection"
+          );
+        } else {
+          console.error("Error importing files:", error);
+          alert(
+            `Import failed: ${
+              error.message || "Connection error - please try again"
+            }`
+          );
+        }
+      }
+    });
+  }
 }
 
 async function loadDocuments() {
